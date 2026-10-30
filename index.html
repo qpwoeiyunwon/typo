@@ -27,6 +27,9 @@
   }
   #trash:hover { color: #111; background: #f2f2f2; }
   #trash:focus-visible { outline: 2px solid #111; outline-offset: 2px; }
+  #trash.gulp { animation: gulp .45s ease-out .55s; color: #111; }
+  @keyframes gulp { 0% { transform: scale(1); } 35% { transform: scale(1.35) rotate(-12deg); } 70% { transform: scale(.9) rotate(6deg); } 100% { transform: scale(1); } }
+  .word.sucked { transition: transform .7s cubic-bezier(.6,0,.9,.4), opacity .7s ease-in; opacity: 0; }
   #setup { position: fixed; left: 72px; bottom: 28px; font-size: 14px; color: #c00; }
   @media (prefers-reduced-motion: reduce) { .caret { animation: none; } }
 </style>
@@ -140,13 +143,29 @@ const firebaseConfig = {
   });
 
   // ---------- 쓰레기통: 모두의 화면에서 전부 지우기 ----------
+  // clearAt을 먼저 쓰고 단어를 지움 → 다른 화면도 빨려들어가는 애니메이션이 먼저 시작됨
   trash.addEventListener('click', () => {
-    db.ref('words').remove();
     db.ref('clearAt').set(firebase.database.ServerValue.TIMESTAMP);
+    db.ref('words').remove();
   });
+  function suckAll() {
+    const r = trash.getBoundingClientRect();
+    const tx = r.left + r.width / 2, ty = r.top + r.height / 2;
+    for (const [key, w] of words) {
+      words.delete(key);                         // 움직임 계산·삭제 이벤트에서 분리
+      const el = w.el;
+      el.style.transitionDelay = (Math.random() * 0.15) + 's';
+      el.classList.add('sucked');
+      el.style.transform = `translate(${tx - w.w / 2}px, ${ty - w.h / 2}px) scale(0.05) rotate(${540 + Math.random() * 360}deg)`;
+      setTimeout(() => el.remove(), 1000);
+    }
+    trash.classList.remove('gulp'); void trash.offsetWidth; trash.classList.add('gulp');
+    setTimeout(() => trash.classList.remove('gulp'), 1100);
+  }
   let firstClear = true;
   db.ref('clearAt').on('value', () => {
     if (firstClear) { firstClear = false; return; }
+    suckAll();
     input.value = ''; me.text = ''; syncMe();
   });
 
