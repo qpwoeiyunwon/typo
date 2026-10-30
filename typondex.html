@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>떠돌이 글씨</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; }
+  body { font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; color: #111; cursor: default; }
+  .typing {
+    position: fixed; left: 0; top: 0; transform: translate(-50%, -50%);
+    font-size: 64px; line-height: 1; white-space: pre; display: flex; align-items: center;
+    pointer-events: none;
+  }
+  .caret { width: 3px; height: 56px; background: #111; margin-left: 4px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .word {
+    position: fixed; left: 0; top: 0; font-size: 48px; line-height: 1; white-space: pre;
+    will-change: transform; pointer-events: none;
+  }
+  #input { position: fixed; left: -9999px; top: 0; opacity: 0; }
+  #setup { position: fixed; left: 16px; bottom: 16px; font-size: 14px; color: #c00; }
+  @media (prefers-reduced-motion: reduce) { .caret { animation: none; } }
+</style>
+</head>
+<body>
+<textarea id="input" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+<div id="setup" hidden></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>
+// ▼▼▼ Firebase 콘솔 > 프로젝트 설정 > 내 앱(웹) 의 값으로 교체 ▼▼▼
+const firebaseConfig = {
+  apiKey: "AIzaSyAz-_uEjH4cB0dyIT7lU5VBtdeTCsIq5-0",
+  authDomain: "typo-4054b.firebaseapp.com",
+  databaseURL: "https://typo-4054b-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "typo-4054b",
+  storageBucket: "typo-4054b.firebasestorage.app",
+  messagingSenderId: "73259347629",
+  appId: "1:73259347629:web:d17537f3b3e02f98236024"
+};
+// ▲▲▲
+
+(() => {
+  const LIFETIME = 145;    // 단어가 사라지기까지 초 (2분 25초)
+  const MAX_WORDS = 300;   // 동시에 불러올 최대 단어 수 (과부하 방지)
+  const MAX_LEN = 60;      // 한 사람 입력 중 텍스트 최대 길이
+
+  const setup = document.getElementById('setup');
+  if (firebaseConfig.apiKey.startsWith('YOUR')) {
+    setup.hidden = false; setup.textContent = 'index.html 안의 firebaseConfig 값을 채워주세요.';
+    return;
+  }
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
+  const input = document.getElementById('input');
+  const myId = Math.random().toString(36).slice(2, 10);
+  const me = {
+    x: 0.15 + Math.random() * 0.7,   // 화면 비율 좌표 (모든 화면에서 같은 자리)
+    y: 0.15 + Math.random() * 0.7,
+    text: ''
+  };
+
+  // 서버 시간 보정 (단어 움직임·소멸을 모든 화면에서 똑같이 맞추기 위함)
+  let offset = 0;
+  db.ref('.info/serverTimeOffset').on('value', s => { offset = s.val() || 0; });
+  const now = () => Date.now() + offset;
+
+  // ---------- 내 커서 ----------
+  const myRef = db.ref('cursors/' + myId);
+  db.ref('.info/connected').on('value', s => {
+    if (!s.val()) return;
+    myRef.onDisconnect().remove();
+    myRef.set({ x: me.x, y: me.y, text: me.text });
+  });
+
+  const focus = () => input.focus({ preventScroll: true });
+  addEventListener('pointerdown', e => { e.preventDefault(); focus(); });
+  addEventListener('keydown', () => { if (document.activeElement !== input) focus(); });
+  focus();
+
+  function onInput(e) {
+    let v = input.value;
+    if (!e.isComposing && /\s/.test(v)) {
+      const cut = Math.max(v.lastIndexOf(' '), v.lastIndexOf('\n'), v.lastIndexOf('\t'));
+      v.slice(0, cut).split(/\s+/).filter(Boolean).forEach(releaseWord);
+      v = v.slice(cut + 1);
+      input.value = v;
+    }
+    if (v.length > MAX_LEN) { v = v.slice(0, MAX_LEN); input.value = v; }
+    me.text = v;
+    myRef.set({ x: me.x, y: me.y, text: me.text });
+  }
+  input.addEventListener('input', onInput);
+  input.addEventListener('compositionend', () => onInput({ isComposing: false }));
+
+  function releaseWord(text) {
+    db.ref('words').push({
+      text: text.slice(0, MAX_LEN),
+      x: me.x, y: me.y,
+      ang: Math.random() * Math.PI * 2,
+      speed: 0.04 + Math.random() * 0.05,     // 화면 크기 대비 초당 이동 비율
+      wob: Math.random() * Math.PI * 2,
+      rot: 6 + Math.random() * 14,
+      born: firebase.database.ServerValue.TIMESTAMP
+    });
+  }
+
+  // ---------- 모든 커서 그리기 ----------
+  const cursorEls = new Map();
+  function upsertCursor(id, d) {
+    if (!d) return;
+    let c = cursorEls.get(id);
+    if (!c) {
+      const el = document.createElement('div');
+      el.className = 'typing';
+      el.innerHTML = '<span class="t"></span><span class="caret"></span>';
+      document.body.appendChild(el);
+      c = { el, t: el.firstChild };
+      cursorEls.set(id, c);
+    }
+    c.d = d;
+    c.t.textContent = typeof d.text === 'string' ? d.text : '';
+    placeCursor(c);
+  }
+  const placeCursor = c => { c.el.style.left = (c.d.x * innerWidth) + 'px'; c.el.style.top = (c.d.y * innerHeight) + 'px'; };
+  const cursors = db.ref('cursors');
+  cursors.on('child_added', s => upsertCursor(s.key, s.val()));
+  cursors.on('child_changed', s => upsertCursor(s.key, s.val()));
+  cursors.on('child_removed', s => { const c = cursorEls.get(s.key); if (c) { c.el.remove(); cursorEls.delete(s.key); } });
+  addEventListener('resize', () => cursorEls.forEach(placeCursor));
+
+  // ---------- 떠도는 단어 ----------
+  const words = new Map();
+  const removeWord = key => { const w = words.get(key); if (w) { w.el.remove(); words.delete(key); } };
+  const wref = db.ref('words').limitToLast(MAX_WORDS);
+  wref.on('child_added', s => {
+    const d = s.val(); if (!d || typeof d.text !== 'string') return;
+    const el = document.createElement('span');
+    el.className = 'word'; el.textContent = d.text;
+    document.body.appendChild(el);
+    words.set(s.key, { el, d, w: el.offsetWidth, h: el.offsetHeight });
+  });
+  wref.on('child_removed', s => removeWord(s.key));
+
+  // 벽에 튕기는 직선 이동을 시간만으로 계산 → 모든 화면에서 같은 위치
+  const bounce = (u, R) => { if (R <= 0) return 0; const m = ((u % (2 * R)) + 2 * R) % (2 * R); return m <= R ? m : 2 * R - m; };
+
+  function tick() {
+    const W = innerWidth, H = innerHeight, t = now();
+    for (const [key, w] of words) {
+      const d = w.d;
+      if (!d.born) continue;                       // 서버 시간 확정 전
+      const age = Math.max(0, (t - d.born) / 1000);
+      if (age >= LIFETIME) {                       // 2분 25초 지나면 화면과 DB에서 삭제
+        removeWord(key);
+        db.ref('words/' + key).remove();
+        continue;
+      }
+      const dist = d.speed * age;
+      const wobX = Math.sin(age * 0.7 + d.wob) * 0.03, wobY = Math.cos(age * 0.9 + d.wob) * 0.03;
+      const x = bounce(d.x * W - w.w / 2 + (Math.cos(d.ang) * dist + wobX) * W, W - w.w);
+      const y = bounce(d.y * H - w.h / 2 + (Math.sin(d.ang) * dist + wobY) * H, H - w.h);
+      const r = Math.sin(age * 1.3 + d.wob) * d.rot;
+      w.el.style.transform = `translate(${x}px, ${y}px) rotate(${r}deg)`;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
